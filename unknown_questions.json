@@ -427,5 +427,27 @@
       "last_name": "Шихов",
       "language_code": "ru"
     }
+  },
+  {
+    "question": "fdsf",
+    "user_id": 5975799401,
+    "timestamp": "2025-12-05T19:19:47.570922",
+    "user_info": {
+      "username": "a35472",
+      "first_name": "Александр",
+      "last_name": "Шихов",
+      "language_code": "ru"
+    }
+  },
+  {
+    "question": "аывавы",
+    "user_id": 5975799401,
+    "timestamp": "2025-12-05T19:22:50.545066",
+    "user_info": {
+      "username": "a35472",
+      "first_name": "Александр",
+      "last_name": "Шихов",
+      "language_code": "ru"
+    }
   }
 ]

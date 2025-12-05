@@ -4,23 +4,19 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from config import BOT_TOKEN, ADMIN_IDS
 from bot_handlers import TelegramBot
 
-# Настройка логирования (убираем лишний DEBUG)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-# Отключаем спам от httpcore/httpx
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Создаём экземпляр бота
 bot_logic = TelegramBot()
 
 
 async def start(update: Update, context):
-    """Обработчик команды /start"""
     user_first_name = update.effective_user.first_name
 
     await update.message.reply_text(
@@ -32,7 +28,6 @@ async def start(update: Update, context):
 
 
 async def admin_command(update: Update, context):
-    """Команда /admin"""
     user_id = update.effective_user.id
 
     if user_id in ADMIN_IDS:
@@ -45,7 +40,6 @@ async def admin_command(update: Update, context):
 
 
 def main():
-    """Точка входа"""
     if not BOT_TOKEN:
         logger.error("ОШИБКА: Не задан BOT_TOKEN!")
         return
@@ -55,6 +49,12 @@ def main():
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
+
+    # ✅ ДОБАВЛЕНО: Обработчик feedback (fb_yes:, fb_no:)
+    app.add_handler(CallbackQueryHandler(
+        bot_logic.handle_feedback,
+        pattern=r"^fb_(yes|no):"
+    ))
 
     # Кнопки подтверждения ответа (confirm:, other:, noanswer:, select:)
     app.add_handler(CallbackQueryHandler(

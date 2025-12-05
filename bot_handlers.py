@@ -1,11 +1,13 @@
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from config import KNOWLEDGE_BASE, ADMIN_IDS
+from feedback_manager import FeedbackManager
 from neural_searcher import NeuralSearcher
 from session_manager import SessionManager
 from user_manager import UserManager
 import logging
 import re
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +19,11 @@ class TelegramBot:
         self.sessions = SessionManager()
         self.pending_confirmations = {}
         self.admin_pending_replies = {}
+        self.feedback_manager = FeedbackManager()
 
-        # Приводим ADMIN_IDS к множеству int для быстрой проверки
+        # ✅ ДОБАВЛЕНО: Хранилище для связки feedback с вопросом/ответом
+        self.pending_feedback = {}  # {question_hash: {'question': ..., 'answer': ..., 'user_id': ...}}
+
         self._admin_ids = set()
         for admin_id in ADMIN_IDS:
             try:
@@ -29,7 +34,6 @@ class TelegramBot:
         logger.info(f"Initialized with admin IDs: {self._admin_ids}")
 
     def is_admin(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь администратором"""
         result = int(user_id) in self._admin_ids
         logger.debug(f"Admin check for {user_id}: {result}")
         return result
@@ -44,7 +48,7 @@ class TelegramBot:
     def admin_keyboard(self):
         kb = [
             [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Неизвестные вопросы")],
-            [KeyboardButton("⬅️ Назад в меню")]
+            [KeyboardButton("📈 Отзывы"), KeyboardButton("⬅️ Назад в меню")]  # ✅ Добавлена кнопка
         ]
         return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
@@ -65,6 +69,39 @@ class TelegramBot:
             ]
         ]
         return InlineKeyboardMarkup(keyboard)
+
+    # ✅ ИСПРАВЛЕНО: Убран @staticmethod, добавлена логика сохранения контекста
+    def feedback_keyboard(self, question_hash: str):
+        """Клавиатура для оценки ответа"""
+        keyboard = [
+            [
+                InlineKeyboardButton("👍 Полезно", callback_data=f"fb_yes:{question_hash}"),
+                InlineKeyboardButton("👎 Не помогло", callback_data=f"fb_no:{question_hash}")
+            ]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def _generate_feedback_hash(self, user_id: int, question: str) -> str:
+        """Генерирует уникальный хэш для связки feedback"""
+        data = f"{user_id}:{question}:{hash(question)}"
+        return hashlib.md5(data.encode()).hexdigest()[:12]
+
+    def _save_pending_feedback(self, user_id: int, question: str, answer: str) -> str:
+        """Сохраняет контекст для последующего feedback"""
+        question_hash = self._generate_feedback_hash(user_id, question)
+        self.pending_feedback[question_hash] = {
+            'user_id': user_id,
+            'question': question,
+            'answer': answer
+        }
+
+        # Очистка старых записей (храним максимум 1000)
+        if len(self.pending_feedback) > 1000:
+            oldest_keys = list(self.pending_feedback.keys())[:100]
+            for key in oldest_keys:
+                del self.pending_feedback[key]
+
+        return question_hash
 
     def is_likely_real_question(self, text: str) -> bool:
         clean_text = re.sub(r'\s+', ' ', text.strip().lower())
@@ -122,13 +159,41 @@ class TelegramBot:
 
         if text == "📊 Статистика" and is_admin:
             stats = self.user_manager.get_unknown_questions_stats()
+            fb_stats = self.feedback_manager.get_stats()  # ✅ Добавлена статистика feedback
             await update.message.reply_text(
                 f"📊 *Статистика:*\n\n"
-                f"• Всего вопросов: {stats['total_unknown_questions']}\n"
+                f"*Вопросы:*\n"
+                f"• Всего: {stats['total_unknown_questions']}\n"
                 f"• Уникальных: {stats['unique_questions']}\n"
-                f"• Пользователей: {stats['unique_users_asked']}",
+                f"• Пользователей: {stats['unique_users_asked']}\n\n"
+                f"*Обратная связь:*\n"
+                f"• Всего отзывов: {fb_stats['total']}\n"
+                f"• 👍 Положительных: {fb_stats['positive']}\n"
+                f"• 👎 Отрицательных: {fb_stats['negative']}\n"
+                f"• Рейтинг: {fb_stats['rate']}%",
                 parse_mode="Markdown"
             )
+            return
+
+        # ✅ ДОБАВЛЕНО: Просмотр отзывов
+        if text == "📈 Отзывы" and is_admin:
+            fb_stats = self.feedback_manager.get_stats()
+            negative = self.feedback_manager.get_negative_feedback(limit=5)
+
+            response = (
+                f"📈 *Статистика отзывов:*\n\n"
+                f"👍 Положительных: {fb_stats['positive']}\n"
+                f"👎 Отрицательных: {fb_stats['negative']}\n"
+                f"📊 Рейтинг: {fb_stats['rate']}%\n"
+            )
+
+            if negative:
+                response += "\n*Последние негативные отзывы:*\n"
+                for i, fb in enumerate(negative[-5:], 1):
+                    q = fb.get('question', 'N/A')[:40]
+                    response += f"\n{i}. _{q}_..."
+
+            await update.message.reply_text(response, parse_mode="Markdown")
             return
 
         if text == "❓ Неизвестные вопросы" and is_admin:
@@ -232,10 +297,16 @@ class TelegramBot:
 
         logger.info(f"Query: '{text}' | Score: {score:.3f} | Match: '{best['question']}'")
 
+        # ✅ ИЗМЕНЕНО: Добавлен feedback keyboard при высоком score
         if score > 0.80:
+            # Сохраняем контекст для feedback
+            fb_hash = self._save_pending_feedback(user_id, text, best['answer'])
+
             await update.message.reply_text(
-                best['answer'],
-                reply_markup=self.main_keyboard()
+                f"{best['answer']}\n\n"
+                f"_Ответ был полезен?_",
+                reply_markup=self.feedback_keyboard(fb_hash),
+                parse_mode="Markdown"
             )
             return
 
@@ -265,6 +336,66 @@ class TelegramBot:
             reply_markup=self.main_keyboard()
         )
 
+    # ✅ ДОБАВЛЕНО: Обработчик feedback callback
+    async def handle_feedback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает оценку ответа пользователем"""
+        query = update.callback_query
+        user_id = query.from_user.id
+        data = query.data
+
+        await query.answer("Спасибо за отзыв! 🙏")
+
+        if ':' not in data:
+            logger.error(f"Invalid feedback callback data: {data}")
+            return
+
+        parts = data.split(':')
+        action = parts[0]  # fb_yes или fb_no
+        question_hash = parts[1] if len(parts) > 1 else None
+
+        if not question_hash:
+            logger.error(f"No question hash in feedback: {data}")
+            return
+
+        # Получаем сохранённый контекст
+        feedback_data = self.pending_feedback.get(question_hash)
+
+        if not feedback_data:
+            # Контекст устарел, но всё равно благодарим
+            await query.edit_message_text(
+                query.message.text.replace("\n\n_Ответ был полезен?_", "") +
+                "\n\n✅ Спасибо за отзыв!",
+                parse_mode="Markdown"
+            )
+            return
+
+        is_helpful = (action == "fb_yes")
+
+        # Сохраняем feedback
+        self.feedback_manager.add_feedback(
+            user_id=feedback_data['user_id'],
+            question=feedback_data['question'],
+            answer=feedback_data['answer'],
+            is_helpful=is_helpful
+        )
+
+        # Обновляем сообщение
+        emoji = "👍" if is_helpful else "👎"
+        original_text = query.message.text or ""
+
+        # Убираем вопрос о полезности
+        clean_text = original_text.replace("\n\n_Ответ был полезен?_", "")
+
+        await query.edit_message_text(
+            f"{clean_text}\n\n{emoji} Спасибо за отзыв!",
+            parse_mode="Markdown"
+        )
+
+        # Удаляем из pending
+        del self.pending_feedback[question_hash]
+
+        logger.info(f"Feedback from {user_id}: helpful={is_helpful}, question='{feedback_data['question'][:50]}'")
+
     async def _process_admin_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         """Обрабатывает ответ администратора"""
         admin_id = update.message.from_user.id
@@ -282,17 +413,21 @@ class TelegramBot:
         target_user_id = admin_data['user_id']
         original_question = admin_data.get('question', 'Неизвестный вопрос')
 
-        # Удаляем ДО отправки
         del self.admin_pending_replies[admin_id]
 
         try:
+            # ✅ ИЗМЕНЕНО: Добавляем feedback keyboard к ответу админа
+            fb_hash = self._save_pending_feedback(target_user_id, original_question, text)
+
             await context.bot.send_message(
                 chat_id=target_user_id,
                 text=(
                     f"💬 *Ответ от поддержки НовГУ:*\n\n"
                     f"❓ Ваш вопрос: _{original_question}_\n\n"
-                    f"✉️ Ответ:\n{text}"
+                    f"✉️ Ответ:\n{text}\n\n"
+                    f"_Ответ был полезен?_"
                 ),
+                reply_markup=self.feedback_keyboard(fb_hash),
                 parse_mode="Markdown"
             )
 
@@ -347,7 +482,6 @@ class TelegramBot:
             await query.edit_message_text("❌ Ошибка: неверный формат ID")
             return
 
-        # Извлекаем вопрос из текста сообщения
         original_text = query.message.text or ""
         original_question = "Вопрос не найден"
 
@@ -355,7 +489,6 @@ class TelegramBot:
         if match:
             original_question = match.group(1).strip()
 
-        # Сохраняем состояние
         self.admin_pending_replies[admin_id] = {
             'user_id': target_user_id,
             'question': original_question,
@@ -419,8 +552,14 @@ class TelegramBot:
 
         if action == "confirm":
             best = results[0]
+
+            # ✅ ИЗМЕНЕНО: Добавляем feedback после подтверждения
+            fb_hash = self._save_pending_feedback(user_id, question, best['answer'])
+
             await query.edit_message_text(
-                f"✅ *Ответ:*\n\n{best['answer']}",
+                f"✅ *Ответ:*\n\n{best['answer']}\n\n"
+                f"_Ответ был полезен?_",
+                reply_markup=self.feedback_keyboard(fb_hash),
                 parse_mode="Markdown"
             )
 
@@ -463,8 +602,14 @@ class TelegramBot:
                     variant_idx = int(parts[2])
                     if 1 <= variant_idx < len(results):
                         selected = results[variant_idx]
+
+                        # ✅ ИЗМЕНЕНО: Добавляем feedback после выбора варианта
+                        fb_hash = self._save_pending_feedback(user_id, question, selected['answer'])
+
                         await query.edit_message_text(
-                            f"✅ *Ответ:*\n\n{selected['answer']}",
+                            f"✅ *Ответ:*\n\n{selected['answer']}\n\n"
+                            f"_Ответ был полезен?_",
+                            reply_markup=self.feedback_keyboard(fb_hash),
                             parse_mode="Markdown"
                         )
                 except (ValueError, IndexError):
