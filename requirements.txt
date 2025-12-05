@@ -1,0 +1,8 @@
+requests
+python-telegram-bot
+sentence-transformers
+faiss-cpu
+rapidfuzz
+torch
+numpy
+python-dotenv
