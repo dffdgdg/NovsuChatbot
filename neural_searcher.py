@@ -1,18 +1,25 @@
-import torch
-import faiss
-from sentence_transformers import SentenceTransformer
+"""
+Нейросетевой поиск по базе знаний.
+Использует SentenceTransformer и FAISS для семантического поиска.
+"""
+
 import logging
 from typing import List, Dict, Optional, Set
+
+import faiss
+import torch
+from sentence_transformers import SentenceTransformer
 from rapidfuzz import fuzz, process
+
 from utils import clean_text
 
 logger = logging.getLogger(__name__)
 
 
 class NeuralSearcher:
-    """Нейросетевой поиск по базе знаний"""
+    """Семантический поиск по базе знаний."""
 
-    # Стоп-слова (УБРАЛ "привет" - это ключевое слово в базе!)
+    # Стоп-слова для фильтрации
     STOP_WORDS: Set[str] = {
         'как', 'что', 'где', 'когда', 'почему', 'зачем', 'какой', 'какая', 'какое', 'какие',
         'кто', 'чей', 'чья', 'чьё', 'чьи', 'сколько', 'который', 'которая', 'которое',
@@ -38,42 +45,48 @@ class NeuralSearcher:
     def __init__(self, knowledge_base: List[Dict]):
         self.knowledge_base = knowledge_base
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"Устройство для нейросети: {self.device}")
+        logger.info(f"Устройство: {self.device}")
 
         logger.info("Загрузка модели SentenceTransformer...")
-        self.model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+        self.model = SentenceTransformer(
+            'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+        )
         self.model.to(self.device)
 
         self._prepare_search_index()
         self._build_keyword_index()
 
     def _prepare_search_index(self):
-        """Подготавливает индекс для поиска"""
+        """Подготавливает FAISS-индекс для поиска."""
         self.all_questions = []
         self.question_to_answer = {}
         self.hardcoded_keywords_map: Dict[str, Dict] = {}
 
         for item in self.knowledge_base:
+            # Основной вопрос
             clean_q = clean_text(item['question'])
             if clean_q:
                 self._add_to_index(clean_q, item)
 
+            # Вариации вопроса
             for variation in item.get('variations', []):
                 clean_v = clean_text(variation)
                 if clean_v:
                     self._add_to_index(clean_v, item)
 
+            # Ключевые слова для точного совпадения
             for keyword in item.get('keywords', []):
                 cleaned_keyword = clean_text(keyword)
                 if cleaned_keyword:
                     self.hardcoded_keywords_map[cleaned_keyword] = item
 
         if not self.all_questions:
-            logger.error("⚠️ База знаний пуста!")
+            logger.error("База знаний пуста!")
             self.index = None
             return
 
-        logger.info("Создание FAISS индекса...")
+        # Создание FAISS-индекса
+        logger.info("Создание FAISS-индекса...")
         embeddings = self.model.encode(
             self.all_questions,
             convert_to_tensor=True,
@@ -86,23 +99,23 @@ class NeuralSearcher:
         logger.info(f"Индекс готов: {len(self.all_questions)} фраз")
 
     def _build_keyword_index(self):
-        """Строит индекс значимых слов из базы знаний"""
+        """Строит индекс значимых слов для фильтрации."""
         self.significant_words: Set[str] = set()
 
         for item in self.knowledge_base:
-            # Добавляем ключевые слова
+            # Ключевые слова
             for kw in item.get('keywords', []):
                 word = clean_text(kw)
                 if word and len(word) > 2:
                     self.significant_words.add(word)
 
-            # Добавляем значимые слова из вариаций
+            # Слова из вариаций
             for var in item.get('variations', []):
                 for word in clean_text(var).split():
                     if word not in self.STOP_WORDS and len(word) > 3:
                         self.significant_words.add(word)
 
-            # Добавляем слова из вопроса
+            # Слова из вопроса
             for word in clean_text(item['question']).split():
                 if word not in self.STOP_WORDS and len(word) > 3:
                     self.significant_words.add(word)
@@ -110,33 +123,29 @@ class NeuralSearcher:
         logger.info(f"Индекс значимых слов: {len(self.significant_words)} слов")
 
     def _add_to_index(self, text: str, item: Dict):
-        """Добавляет текст в индекс"""
+        """Добавляет текст в индекс поиска."""
         if text and text not in self.all_questions:
             self.all_questions.append(text)
             self.question_to_answer[text] = item
 
     def _get_significant_words(self, text: str) -> Set[str]:
-        """Извлекает значимые слова из текста (без стоп-слов)"""
+        """Извлекает значимые слова (без стоп-слов)."""
         words = set(clean_text(text).split())
         return {w for w in words if w not in self.STOP_WORDS and len(w) > 2}
 
     def _has_relevant_words(self, query: str) -> bool:
-        """Проверяет, содержит ли запрос релевантные слова из базы знаний"""
+        """Проверяет наличие релевантных слов из базы знаний."""
         query_words = self._get_significant_words(query)
 
         if not query_words:
-            # Проверяем также ключевые слова напрямую
             clean_q = clean_text(query)
-            if clean_q in self.hardcoded_keywords_map:
-                return True
-            return False
+            return clean_q in self.hardcoded_keywords_map
 
         for word in query_words:
-            # Точное совпадение
             if word in self.significant_words:
                 return True
 
-            # Проверяем начало слова (для разных форм)
+            # Проверка по началу слова (для разных форм)
             if len(word) > 4:
                 word_stem = word[:5]
                 for sig_word in self.significant_words:
@@ -146,7 +155,7 @@ class NeuralSearcher:
         return False
 
     def _calculate_word_overlap(self, query: str, matched_text: str) -> float:
-        """Вычисляет совпадение значимых слов"""
+        """Вычисляет долю совпадающих значимых слов."""
         query_words = self._get_significant_words(query)
         matched_words = self._get_significant_words(matched_text)
 
@@ -170,48 +179,49 @@ class NeuralSearcher:
         return overlap_count / len(query_words)
 
     def search(self, query: str, top_k: int = 5, threshold: float = 0.55) -> List[Dict]:
-        """Поиск по базе знаний"""
+        """
+        Поиск по базе знаний.
+
+        Args:
+            query: Текст запроса
+            top_k: Максимальное количество результатов
+            threshold: Минимальный порог релевантности
+
+        Returns:
+            Список найденных ответов с оценками
+        """
         if not query or self.index is None:
             return []
 
         clean_query = clean_text(query)
-
         if not clean_query or len(clean_query) < 2:
             return []
 
-        # 1. Проверка точных ключевых слов (ПЕРВЫМ!)
+        # 1. Проверка точных ключевых слов
         keyword_result = self._check_keywords(clean_query)
         if keyword_result:
             return [keyword_result]
 
-        # 2. Проверяем наличие значимых слов
+        # 2. Проверка наличия значимых слов
         significant_query_words = self._get_significant_words(query)
         has_relevant = self._has_relevant_words(query)
 
-        logger.debug(f"Query: '{query}' | Significant: {significant_query_words} | Relevant: {has_relevant}")
-
-        # Если нет значимых слов И нет релевантных - не ищем
         if not significant_query_words and not has_relevant:
-            logger.info(f"Query '{query}' - no significant/relevant words")
             return []
 
         if not has_relevant:
-            logger.info(f"Query '{query}' - no relevant words from KB")
             return []
 
         # 3. Нейросетевой поиск
         neural_results = self._neural_search(clean_query, top_k, threshold)
-
         if neural_results:
             return neural_results
 
-        # 4. Fuzzy поиск
-        fuzzy_results = self._fuzzy_search(clean_query, top_k)
-
-        return fuzzy_results
+        # 4. Fuzzy-поиск как fallback
+        return self._fuzzy_search(clean_query, top_k)
 
     def _check_keywords(self, clean_query: str) -> Optional[Dict]:
-        """Проверяет точные ключевые слова"""
+        """Проверяет точные совпадения с ключевыми словами."""
         for keyword, kb_item in self.hardcoded_keywords_map.items():
             # Точное совпадение
             if clean_query == keyword:
@@ -222,7 +232,7 @@ class NeuralSearcher:
                     'match_type': 'keyword_exact'
                 }
 
-            # Очень похоже (> 92%)
+            # Высокое fuzzy-совпадение
             ratio = fuzz.ratio(clean_query, keyword)
             if ratio > 92:
                 return {
@@ -241,7 +251,7 @@ class NeuralSearcher:
                     'match_type': 'keyword_contains'
                 }
 
-            # Ключевое слово содержит запрос (для коротких запросов типа "привет")
+            # Ключевое слово содержит запрос
             if len(clean_query) > 3 and clean_query in keyword:
                 return {
                     'question': kb_item['question'],
@@ -253,7 +263,7 @@ class NeuralSearcher:
         return None
 
     def _neural_search(self, clean_query: str, top_k: int, threshold: float) -> List[Dict]:
-        """Нейросетевой поиск с валидацией"""
+        """Нейросетевой поиск с валидацией по словам."""
         query_emb = self.model.encode([clean_query], convert_to_tensor=True).cpu().numpy()
         faiss.normalize_L2(query_emb)
 
@@ -272,21 +282,17 @@ class NeuralSearcher:
             matched_text = self.all_questions[idx]
             item = self.question_to_answer[matched_text]
 
-            # Проверяем совпадение слов
+            # Проверка совпадения слов
             word_overlap = self._calculate_word_overlap(clean_query, matched_text)
-
-            # Фильтрация: если нет совпадения слов - пропускаем
             if word_overlap < 0.3:
-                logger.debug(f"Skip '{matched_text}' - overlap {word_overlap:.2f}")
                 continue
 
-            # Корректируем score
+            # Корректировка score
             adjusted_score = raw_score * 0.6 + word_overlap * 0.4
-
             if adjusted_score < threshold:
                 continue
 
-            # Дубликаты
+            # Фильтрация дубликатов
             answer_key = item['answer'][:100]
             if answer_key in seen_answers:
                 continue
@@ -306,11 +312,10 @@ class NeuralSearcher:
                 break
 
         results.sort(key=lambda x: x['score'], reverse=True)
-
         return results
 
     def _fuzzy_search(self, clean_query: str, top_k: int) -> List[Dict]:
-        """Fuzzy поиск"""
+        """Fuzzy-поиск для случаев, когда нейросеть не справилась."""
         results = []
         seen_answers = set()
 
@@ -351,7 +356,7 @@ class NeuralSearcher:
         return results
 
     def debug_search(self, query: str) -> None:
-        """Отладка поиска"""
+        """Отладочный вывод для анализа поиска."""
         clean_q = clean_text(query)
         sig_words = self._get_significant_words(query)
         has_rel = self._has_relevant_words(query)
@@ -381,30 +386,17 @@ class NeuralSearcher:
                 print(f"   Matched: {r.get('matched_variation', 'N/A')}")
 
 
-# Тестирование
 if __name__ == "__main__":
     from config import KNOWLEDGE_BASE
 
     searcher = NeuralSearcher(KNOWLEDGE_BASE)
 
     test_queries = [
-        "привет",  # ✅ Должен найти (keyword)
-        "здравствуйте",  # ✅ Должен найти (keyword)
-        "как какать",  # ❌ Мусор
-        "что такое любовь",  # ❌ Мусор
-        "абракадабра",  # ❌ Мусор
-        "фывапролдж",  # ❌ Мусор
-        "где расписание",  # ✅ Должен найти
-        "расписание пар",  # ✅ Должен найти
-        "потерял пропуск",  # ✅ Должен найти
-        "стипендия",  # ✅ Должен найти
-        "военная кафедра",  # ✅ Должен найти
-        "как получить матпомощь",  # ✅ Должен найти
+        "привет",
+        "где расписание",
+        "стипендия",
+        "потерял пропуск",
     ]
-
-    print("\n" + "=" * 60)
-    print("ТЕСТИРОВАНИЕ ПОИСКА")
-    print("=" * 60)
 
     for q in test_queries:
         searcher.debug_search(q)

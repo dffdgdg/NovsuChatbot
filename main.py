@@ -1,9 +1,22 @@
-import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
-from config import BOT_TOKEN, ADMIN_IDS
-from bot_handlers import TelegramBot
+"""
+Точка входа для запуска Telegram-бота.
+"""
 
+import logging
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters
+)
+
+from bot_handlers import TelegramBot
+from config import BOT_TOKEN, ADMIN_IDS
+
+# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -17,6 +30,7 @@ bot_logic = TelegramBot()
 
 
 async def start(update: Update, context):
+    """Обработчик команды /start."""
     user_first_name = update.effective_user.first_name
 
     await update.message.reply_text(
@@ -28,6 +42,7 @@ async def start(update: Update, context):
 
 
 async def admin_command(update: Update, context):
+    """Обработчик команды /admin."""
     user_id = update.effective_user.id
 
     if user_id in ADMIN_IDS:
@@ -40,8 +55,9 @@ async def admin_command(update: Update, context):
 
 
 def main():
+    """Запуск бота."""
     if not BOT_TOKEN:
-        logger.error("ОШИБКА: Не задан BOT_TOKEN!")
+        logger.error("Не задан BOT_TOKEN!")
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -50,19 +66,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_command))
 
-    # ✅ ДОБАВЛЕНО: Обработчик feedback (fb_yes:, fb_no:)
+    # Callback-обработчики
     app.add_handler(CallbackQueryHandler(
         bot_logic.handle_feedback,
         pattern=r"^fb_(yes|no):"
     ))
-
-    # Кнопки подтверждения ответа (confirm:, other:, noanswer:, select:)
     app.add_handler(CallbackQueryHandler(
         bot_logic.handle_confirmation,
         pattern=r"^(confirm|other|noanswer|select):"
     ))
-
-    # Кнопка "Ответить" для админа (reply:)
     app.add_handler(CallbackQueryHandler(
         bot_logic.handle_admin_reply,
         pattern=r"^reply:"

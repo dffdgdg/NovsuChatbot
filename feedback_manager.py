@@ -1,12 +1,16 @@
-# feedback_manager.py
+"""
+Менеджер обратной связи.
+Сохраняет и анализирует оценки пользователей.
+"""
+
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 class FeedbackManager:
-    """Управление обратной связью по ответам"""
+    """Управление обратной связью по ответам."""
 
     def __init__(self, filepath: str = "feedback.json"):
         self.filepath = filepath
@@ -14,6 +18,7 @@ class FeedbackManager:
         self._load()
 
     def _load(self):
+        """Загружает данные из файла."""
         if os.path.exists(self.filepath):
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
@@ -22,11 +27,13 @@ class FeedbackManager:
                 self.feedback = []
 
     def _save(self):
+        """Сохраняет данные в файл."""
         with open(self.filepath, 'w', encoding='utf-8') as f:
             json.dump(self.feedback, f, ensure_ascii=False, indent=2)
 
     def add_feedback(self, user_id: int, question: str, answer: str,
                      is_helpful: bool, comment: str = None):
+        """Добавляет отзыв пользователя."""
         self.feedback.append({
             'user_id': user_id,
             'question': question,
@@ -38,7 +45,7 @@ class FeedbackManager:
         self._save()
 
     def get_stats(self) -> Dict:
-        """Статистика по отзывам"""
+        """Возвращает статистику по отзывам."""
         if not self.feedback:
             return {'total': 0, 'positive': 0, 'negative': 0, 'rate': 0}
 
@@ -53,6 +60,6 @@ class FeedbackManager:
         }
 
     def get_negative_feedback(self, limit: int = 20) -> List[Dict]:
-        """Возвращает негативные отзывы для анализа"""
+        """Возвращает негативные отзывы для анализа."""
         negative = [f for f in self.feedback if not f['is_helpful']]
         return negative[-limit:]

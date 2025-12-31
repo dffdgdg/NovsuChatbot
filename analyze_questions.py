@@ -1,10 +1,13 @@
+"""
+Утилита для анализа неизвестных вопросов.
+Помогает выявить частые вопросы для добавления в базу знаний.
+"""
 from collections import Counter
-
 from user_manager import UserManager
 
 
 def analyze_unknown_questions():
-    """Анализ собранных неизвестных вопросов"""
+    """Выводит статистику и список неизвестных вопросов."""
     user_manager = UserManager()
 
     stats = user_manager.get_unknown_questions_stats()
@@ -21,6 +24,7 @@ def analyze_unknown_questions():
 
     if unknown_questions:
         question_counts = Counter([q['question'] for q in unknown_questions])
+
         print("Самые частые неизвестные вопросы:")
         for question, count in question_counts.most_common(10):
             print(f"  {count}x: {question}")
